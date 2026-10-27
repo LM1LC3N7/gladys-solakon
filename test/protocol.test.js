@@ -76,6 +76,7 @@ test('types: signed 16 and 32 bits high word first, scale, strings', () => {
   assert.equal(stringOf([0x534b, 0x3100, 0, 0]), 'SK1');
   assert.equal(stringOf([0x0101, 0x4142]), undefined, 'a control byte: not a text');
   assert.equal(stringOf([0, 0]), undefined);
+  assert.equal(stringOf([0x534b, 0x31ff, 0xffff]), 'SK1', '0xFF padding dropped');
   assert.deepEqual(decodeBlock(block, [1, 2]), {}, 'the wrong count: nothing');
 });
 

@@ -712,7 +712,10 @@ test('B1 at boot: a stop kept in /data with a stale mode is written, never let g
     getConfigFails: 100,
   });
   try {
+    // Down beyond the 3 s of retries: the boot write never left; the `from` of /data is not used.
+    await advance(5 * SECOND, 50);
     assert.equal(app.stopGuard.written, false);
+    assert.equal(app.stopGuard.from, undefined);
     dev.down = false;
     dev.ignoreStop = true;
     await advance(40 * SECOND, 100);
@@ -912,6 +915,77 @@ test('a stop written without a read back: the forced mode read later is the mode
     assert.ok(app.stopGuard, 'never "changed elsewhere": the mode it failed to replace');
     assert.equal(app.stopGuard.from, 1);
     assert.ok(zeros() > before);
+  } finally {
+    stop();
+  }
+});
+
+test('r2: a check that applies the stop has the mode read again at once', async () => {
+  const { app, press, stop, dev, advance, state } = await setup({
+    config: { ...ALLOW, poll_interval: 600 },
+  });
+  try {
+    ok(await press(R.CONTROL_MODE, 'discharge'));
+    dev.ignoreStop = true;
+    refused(await press(R.CONTROL_MODE, 'auto'), /sans confirmation/);
+    await advance(30 * SECOND, 100);
+    assert.equal(state(R.CONTROL_MODE).text, 'discharge');
+    dev.ignoreStop = false;
+    await advance(22 * SECOND, 100);
+    assert.equal(app.stopGuard, undefined);
+    assert.equal(state(R.CONTROL_MODE).text, 'auto', 'long before the next poll');
+  } finally {
+    stop();
+  }
+});
+
+test('r2: a refused 46001 is not among the registers written; "refused" when it was the only write', async () => {
+  const { press, stop, dev } = await setup({ config: ALLOW });
+  try {
+    dev.set32(46003, 1100);
+    dev.set32(46005, 1100);
+    dev.writeExceptions.set(46001, 3);
+    const ack = refused(await press(R.CONTROL_MODE, 'discharge'), /sans confirmation/);
+    assert.match(String(ack.error), /registres écrits : 46003, 46005, 46002; 46001 refusé/);
+    dev.writeExceptions.set(46610, 3);
+    refused(await press(R.MAX_SOC, 90), /a refusé la commande.*non appliquée/);
+  } finally {
+    stop();
+  }
+});
+
+test('r2: a poll reaching the device while the stop never left has it written at once', async () => {
+  const { app, fire, stop, dev, advance } = await setup();
+  try {
+    dev.set(46001, 3);
+    dev.down = true;
+    const ack = fire(R.CONTROL_MODE, 'auto');
+    await advance(5 * SECOND, 50);
+    refused(await ack, /pas encore envoyé/);
+    dev.down = false;
+    // Before the next check (15 s after the click): a poll now.
+    if (app.stopGuard.timer) clearTimeout(app.stopGuard.timer);
+    app.clearTimer();
+    app.lastAttemptAt = -Infinity;
+    const reading = app.tick();
+    await advance(1500, 10);
+    await reading;
+    assert.equal(dev.get(46001), 0);
+  } finally {
+    stop();
+  }
+});
+
+test('r2: a stop clicked again whose read back fails forgets the old `from`', async () => {
+  const { app, press, stop, dev } = await setup({ config: ALLOW });
+  try {
+    ok(await press(R.CONTROL_MODE, 'discharge'));
+    dev.ignoreStop = true;
+    refused(await press(R.CONTROL_MODE, 'auto'), /sans confirmation/);
+    assert.equal(app.stopGuard.from, 1);
+    dev.silentReads.add(46001);
+    refused(await press(R.CONTROL_MODE, 'auto'), /sans confirmation/);
+    assert.equal(app.stopGuard.from, undefined);
   } finally {
     stop();
   }

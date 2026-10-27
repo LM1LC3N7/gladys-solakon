@@ -27,6 +27,14 @@ Handoff document: what is done, what was decided, what comes next.
 
 ## Decisions
 
+- **Review r2 (2026-10-27, approved)**: minors 1 and 3 fixed (a check that applies the stop
+  has the mode read again at once; a refused 46001 is said refused, never among the registers
+  written), tests of minor 2 added (R20 boot write never left, R02 poll triggering the check,
+  R04 `from` reset on a re-click, R14 0xFF padding, R17 "refused" only for a lone write).
+  Left for a later patch (minor 4): on a single-client device, wait ~50 ms for the device's FIN
+  when a session closes cleanly before a stop, instead of destroying it (saves a refusal and
+  250 ms).
+
 - **Review r1 (2026-10-27)**:
   - B1: a stop is never let go (`confirm`, `drop`) before it was written in this run. Its
     `from` is the forced mode read in the session that writes it (the read back right after the

@@ -109,6 +109,8 @@ export function fakeSolakon({ timers, unitId = 1 } = {}) {
     /** Addresses (start of a request) that never answer, or answer an exception. */
     silent: new Set(),
     exceptions: new Map(),
+    /** Exceptions on writes only (functions 6 and 16), by address. */
+    writeExceptions: new Map(),
     /** Reads only (function 3) that never answer, by start address. */
     silentReads: new Set(),
     /** Exceptions on reads only (function 3), by start address. */
@@ -167,7 +169,8 @@ export function fakeSolakon({ timers, unitId = 1 } = {}) {
         if (socket.destroyed) return;
         let answer;
         const exception =
-          dev.exceptions.get(address) ?? (fc === 3 ? dev.readExceptions.get(address) : undefined);
+          dev.exceptions.get(address) ??
+          (fc === 3 ? dev.readExceptions.get(address) : dev.writeExceptions.get(address));
         if (exception) {
           answer = Buffer.from([fc | 0x80, exception]);
         } else if (fc === 3) {

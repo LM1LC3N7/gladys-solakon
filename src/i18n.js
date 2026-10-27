@@ -237,6 +237,7 @@ export const ERRORS = {
     'Command waiting its turn behind other commands (a scene): it is sent within 15 s of the click, or not at all; check the state of the device in a few seconds.',
     'Commande en attente derrière d’autres commandes (une scène) : elle part dans les 15 s qui suivent le clic, ou pas du tout ; vérifiez l’état de l’appareil dans quelques secondes.',
   ),
+  rejected: (register) => both(`${register} refused`, `${register} refusé`),
   written: (list) => both(`registers written: ${list}`, `registres écrits : ${list}`),
   noAnswerYet: both('no answer yet', 'pas encore de réponse'),
   readBackDiffers: both(

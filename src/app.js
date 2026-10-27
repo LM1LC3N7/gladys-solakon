@@ -1411,7 +1411,10 @@ export class SolakonApp {
 
   /** The reason of a command not confirmed, with the registers that left. */
   sentNote(reason, state) {
-    return `${reason}; ${word(ERRORS.written(state.sent.join(', ')), this.config.language)}`;
+    const lang = this.config.language;
+    const rejected =
+      state.rejected === undefined ? '' : `; ${word(ERRORS.rejected(state.rejected), lang)}`;
+    return `${reason}; ${word(ERRORS.written(state.sent.join(', ')), lang)}${rejected}`;
   }
 
   /** The checks before every write, on the latest configuration. */
@@ -1575,6 +1578,10 @@ export class SolakonApp {
           state.sent.length === 1
         ) {
           state.refused = true;
+        } else if (err.kind === ERROR_KINDS.REFUSED && NOT_APPLIED_EXCEPTIONS.has(err.code)) {
+          // Refused by the device: not among the registers written.
+          state.sent.pop();
+          state.rejected = register;
         }
         throw err;
       }
@@ -1944,6 +1951,10 @@ export class SolakonApp {
       this.checking = false;
     }
     if (this.stopGuard !== guard) return;
+    if (outcome.written || outcome.decision === 'done') {
+      // The mode shown changed (or will): read again soon, with the serial number.
+      this.followUp();
+    }
     const code = outcome.back?.controlCode;
     if (outcome.decision === 'done' || (code !== undefined && controlModeOf(code) === 'auto')) {
       this.dropStopGuard('applied');
@@ -1952,7 +1963,6 @@ export class SolakonApp {
       this.dropStopGuard('changed elsewhere');
     } else {
       await this.persistStop();
-      if (outcome.written) this.followUp();
       this.armStopCheck(outcome.decision === 'confirm' ? TIMINGS.holdConfirm : undefined);
     }
   }
