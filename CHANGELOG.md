@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-27
+
 ### Added
 
 - The Solakon ONE plug-in battery over local Modbus TCP: battery level, charge and discharge
@@ -27,4 +29,5 @@ the notes of the version's GitHub Release.
   accepts them ("Accept the held counters", two presses).
 - "Test the connection" button, docs in English and French, cover image.
 
-[Unreleased]: https://github.com/LM1LC3N7/gladys-solakon/commits/main
+[Unreleased]: https://github.com/LM1LC3N7/gladys-solakon/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/LM1LC3N7/gladys-solakon/releases/tag/v0.1.1
