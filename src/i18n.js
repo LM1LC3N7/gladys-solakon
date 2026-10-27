@@ -141,8 +141,8 @@ export const T = {
       ),
     done: (accepted, skipped) =>
       both(
-        `Accepted: ${accepted.map((r) => counterName(r).en).join(', ') || 'none'}${skipped.length ? `; changed since the first press, not accepted: ${skipped.map((r) => counterName(r).en).join(', ')}` : ''}. Published at the next read.`,
-        `Acceptés : ${accepted.map((r) => counterName(r).fr).join(', ') || 'aucun'}${skipped.length ? ` ; changés depuis le premier appui, non acceptés : ${skipped.map((r) => counterName(r).fr).join(', ')}` : ''}. Publiés à la prochaine lecture.`,
+        `Accepted: ${accepted.map((r) => counterName(r).en).join(', ') || 'none'}${skipped.length ? `; changed since the first press, not accepted: ${skipped.map((r) => counterName(r).en).join(', ')}` : ''}.${accepted.length ? ' Published at the next read.' : ''}`,
+        `Acceptés : ${accepted.map((r) => counterName(r).fr).join(', ') || 'aucun'}${skipped.length ? ` ; changés depuis le premier appui, non acceptés : ${skipped.map((r) => counterName(r).fr).join(', ')}` : ''}.${accepted.length ? ' Publiés à la prochaine lecture.' : ''}`,
       ),
   },
 };
@@ -237,6 +237,7 @@ export const ERRORS = {
     'Command waiting its turn behind other commands (a scene): it is sent within 15 s of the click, or not at all; check the state of the device in a few seconds.',
     'Commande en attente derrière d’autres commandes (une scène) : elle part dans les 15 s qui suivent le clic, ou pas du tout ; vérifiez l’état de l’appareil dans quelques secondes.',
   ),
+  written: (list) => both(`registers written: ${list}`, `registres écrits : ${list}`),
   noAnswerYet: both('no answer yet', 'pas encore de réponse'),
   readBackDiffers: both(
     'the values read back are not the ones asked',

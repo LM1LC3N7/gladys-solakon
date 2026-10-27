@@ -242,8 +242,12 @@ test('the stop goes whatever: device never read, read stuck, backoff, queue full
     await advance(200, 10);
     dev.silent.clear();
     dev.set(46001, 3);
-    ok(await press(R.CONTROL_MODE, 'auto'));
-    assert.equal(dev.get(46001), 0);
+    const quick = fire(R.CONTROL_MODE, 'auto');
+    // The stuck read (2 s timeout) is ended at once: the stop is written well before.
+    await advance(400, 10);
+    assert.equal(dev.get(46001), 0, 'written within 400 ms');
+    await advance(5 * SECOND, 50);
+    ok(await quick);
     await advance(SECOND);
     await reading;
     // Backoff: the device was down for the reads, back for the stop.
@@ -420,10 +424,25 @@ test('a lifetime counter: never 0, a drop or a jump held (status), accepted in t
     await advance(31 * SECOND, 100);
     assert.ok(!published().includes(9000));
     assert.match((await app.acceptCounters()).fr, /10 → 9000 kWh/);
-    // The value moved between the two presses: not accepted.
-    dev.set32(39601, 900100);
+    // The value moved a little between the two presses: accepted, within the margin.
+    dev.set32(39601, 900003);
     await advance(31 * SECOND, 100);
-    assert.match((await app.acceptCounters()).fr, /non acceptés : Énergie solaire/);
+    assert.match((await app.acceptCounters()).fr, /Acceptés : Énergie solaire/);
+    await advance(31 * SECOND, 100);
+    assert.equal(state(R.SOLAR_INDEX).state, 9000.03);
+    // A jump again, then far beyond the value listed: held again, nothing published.
+    dev.set32(39601, 2000000);
+    await advance(31 * SECOND, 100);
+    assert.match((await app.acceptCounters()).fr, /9000\.03 → 20000 kWh/);
+    dev.set32(39601, 3000000);
+    await advance(31 * SECOND, 100);
+    assert.match((await app.acceptCounters()).fr, /Acceptés : Énergie solaire/);
+    await advance(31 * SECOND, 100);
+    assert.ok(!published().includes(30000), 'beyond the value accepted: held again');
+    assert.match(gladys.fake.connectionStatus.message.fr, /saut de 9000\.03 à 30000 kWh/);
+    // Nothing held: the second press says so, never "published".
+    const none = await app.acceptCounters();
+    assert.doesNotMatch(none.fr, /Publiés/);
   } finally {
     stop();
   }
@@ -639,6 +658,260 @@ test('another mode read only once (a glitch) does not let the stop go', async ()
       dev.writes().filter((w) => w.address === 46001 && w.value === 0).length >= 2,
       'written again over the mode of before',
     );
+  } finally {
+    stop();
+  }
+});
+
+test('B1: a stop never written is written when the device answers again, whatever mode it shows', async () => {
+  const store = memoryStore();
+  const { app, fire, stop, dev, advance } = await setup({
+    store,
+    config: { ...CFG, poll_interval: 10 },
+  });
+  try {
+    dev.set(46001, 1);
+    await advance(11 * SECOND, 100);
+    assert.equal(app.unit.values.controlCode, 1);
+    // Another tool forces a charge, then the link drops; the last poll still says 1.
+    dev.set(46001, 3);
+    dev.down = true;
+    const ack = fire(R.CONTROL_MODE, 'auto');
+    await advance(5 * SECOND, 50);
+    refused(await ack, /pas encore envoyé/);
+    assert.equal(app.stopGuard.written, false);
+    dev.down = false;
+    dev.ignoreStop = true;
+    await advance(40 * SECOND, 100);
+    const stops = dev.writes().filter((w) => w.address === 46001 && w.value === 0);
+    assert.ok(stops.length >= 1, 'the stop is written');
+    assert.ok(app.stopGuard, 'still held: never "changed elsewhere" on a stale mode');
+    assert.equal(app.stopGuard.from, 3, 'the mode read in the session that wrote it');
+    dev.ignoreStop = false;
+    await advance(20 * SECOND, 100);
+    assert.equal(dev.get(46001), 0);
+    assert.equal(app.stopGuard, undefined);
+  } finally {
+    stop();
+  }
+});
+
+test('B1 at boot: a stop kept in /data with a stale mode is written, never let go unwritten', async () => {
+  const clock = testClock({ start: NOW });
+  const dev = fakeSolakon({ timers: clock.timers });
+  dev.set(46001, 3);
+  dev.down = true;
+  const store = memoryStore({
+    stop: { host: HOST, port: 502, unitId: 1, since: NOW - MINUTE, written: true, from: 1 },
+  });
+  const { app, stop, advance } = await setup({
+    clock,
+    dev,
+    store,
+    boot: true,
+    getConfigFails: 100,
+  });
+  try {
+    assert.equal(app.stopGuard.written, false);
+    dev.down = false;
+    dev.ignoreStop = true;
+    await advance(40 * SECOND, 100);
+    assert.ok(dev.writes().some((w) => w.address === 46001 && w.value === 0));
+    assert.ok(app.stopGuard);
+    assert.equal(app.stopGuard.from, 3);
+  } finally {
+    stop();
+  }
+});
+
+test('I1: a configuration read before a newer save never overwrites it', async () => {
+  const { app, clock, press, stop, dev, advance } = await setup({ config: ALLOW });
+  try {
+    const slow = () =>
+      new Promise((resolve) => clock.timers.setTimeout(() => resolve({ ...ALLOW }), 400));
+    const reconnect = app.onConnected(slow);
+    await advance(100, 10);
+    await app.configUpdated(CFG);
+    await advance(1000, 10);
+    await reconnect;
+    assert.equal(app.config.allowControl, false, 'the save made after the request wins');
+    refused(await press(R.EPS_MODE, 'ups'), /pilotage est désactivé/);
+    assert.equal(dev.writes().length, 0);
+  } finally {
+    stop();
+  }
+});
+
+test('I2: writes that left are never "not sent": sent, without confirmation, and a follow-up read', async () => {
+  const { press, stop, dev, advance } = await setup({ config: ALLOW });
+  try {
+    dev.set32(46003, 1100);
+    dev.set32(46005, 1100);
+    dev.silent.add(46002);
+    const ack = await press(R.CONTROL_MODE, 'discharge');
+    refused(ack, /envoyée, sans confirmation.*registres écrits : 46003, 46005, 46002/);
+    assert.equal(dev.get32(46003), 800);
+    dev.silent.clear();
+    const reads = dev.reads().length;
+    await advance(6 * SECOND, 100);
+    assert.ok(dev.reads().length > reads, 'a follow-up read');
+  } finally {
+    stop();
+  }
+});
+
+test('I3: a silent optional block never blocks the values; skipped after 3 failures; status exact', async () => {
+  const { gladys, app, stop, dev, advance, state } = await setup();
+  try {
+    dev.silent.add(39601);
+    dev.set(39424, 61);
+    await advance(31 * SECOND, 100);
+    assert.equal(state(R.BATTERY_LEVEL).state, 61);
+    assert.equal(gladys.fake.connectionStatus.connected, true);
+    assert.match(gladys.fake.connectionStatus.message.fr, /Non lus cette fois : energy, settings/);
+    await advance(2 * 31 * SECOND, 100);
+    const asked = dev.reads().filter((r) => r.address === 39601).length;
+    await advance(3 * 31 * SECOND, 100);
+    assert.equal(dev.reads().filter((r) => r.address === 39601).length, asked, 'skipped');
+    assert.equal(app.unit.online, true);
+  } finally {
+    stop();
+  }
+});
+
+test('the option is checked again between the writes of one command', async () => {
+  const { app, fire, stop, dev, advance } = await setup({ config: ALLOW });
+  try {
+    dev.set32(46003, 1100);
+    dev.set32(46005, 1100);
+    dev.delay = 200;
+    const ack = fire(R.CONTROL_MODE, 'discharge');
+    while (!dev.writes().length) await advance(10, 10);
+    await app.configUpdated(CFG);
+    await advance(5 * SECOND, 50);
+    refused(await ack, /sans confirmation|désactivé/);
+    assert.equal(dev.writes().filter((w) => w.address === 46001).length, 0);
+  } finally {
+    stop();
+  }
+});
+
+test('the EPS output needs the option too', async () => {
+  const { press, stop, dev } = await setup();
+  try {
+    refused(await press(R.EPS_MODE, 'eps'), /pilotage est désactivé/);
+    assert.equal(dev.writes().length, 0);
+  } finally {
+    stop();
+  }
+});
+
+test('the held stop: ended by a poll reading automatic; an undocumented or unreadable mode is written over', async () => {
+  const { app, press, stop, dev, advance } = await setup({ config: ALLOW });
+  try {
+    ok(await press(R.CONTROL_MODE, 'discharge'));
+    dev.ignoreStop = true;
+    refused(await press(R.CONTROL_MODE, 'auto'), /sans confirmation/);
+    const zeros = () => dev.writes().filter((w) => w.address === 46001 && w.value === 0).length;
+    // An undocumented code: written over.
+    dev.set(46001, 32);
+    let before = zeros();
+    await advance(40 * SECOND, 100);
+    assert.ok(zeros() > before, 'undocumented mode written over');
+    // A refused read of the mode: written over, in doubt.
+    dev.set(46001, 1);
+    dev.readExceptions.set(46001, 4);
+    before = zeros();
+    await advance(40 * SECOND, 100);
+    assert.ok(zeros() > before, 'unreadable mode written over');
+    dev.readExceptions.clear();
+    assert.ok(app.stopGuard);
+    // A poll reading automatic ends it at once (before any check).
+    dev.set(46001, 0);
+    app.clearTimer();
+    app.lastAttemptAt = -Infinity;
+    if (app.stopGuard.timer) clearTimeout(app.stopGuard.timer);
+    const reading = app.tick();
+    await advance(500, 10);
+    await reading;
+    assert.equal(app.stopGuard, undefined);
+  } finally {
+    stop();
+  }
+});
+
+test('the held stop waits for the device to apply it, and gives the line to a command', async () => {
+  const { app, press, stop, dev, advance } = await setup({ config: ALLOW });
+  try {
+    ok(await press(R.CONTROL_MODE, 'discharge'));
+    dev.ignoreStop = true;
+    refused(await press(R.CONTROL_MODE, 'auto'), /sans confirmation/);
+    const guard = app.stopGuard;
+    assert.equal(app.decideStop(guard, 1, guard.sentAt + 1000), 'wait');
+    assert.equal(app.decideStop(guard, 1, guard.sentAt + 6000), 'resend');
+    // A command waiting: the check reads nothing, writes nothing, and tries again soon.
+    const before = dev.log.length;
+    app.queue.push({});
+    await app.runCheck();
+    assert.equal(dev.log.length, before);
+    app.queue.length = 0;
+    await advance(2 * SECOND, 100);
+    assert.ok(dev.log.length > before);
+  } finally {
+    stop();
+  }
+});
+
+test('configurations saved one after the other apply in order, the last one wins', async () => {
+  const { app, stop, dev, advance } = await setup();
+  try {
+    dev.delay = 300;
+    app.clearTimer();
+    app.lastAttemptAt = -Infinity;
+    const reading = app.tick();
+    await advance(50, 10);
+    const first = app.configUpdated({ host: '192.168.1.99' });
+    const second = app.configUpdated({ ...ALLOW, poll_interval: 60 });
+    await advance(5 * SECOND, 50);
+    await Promise.all([first, second, reading]);
+    assert.equal(app.config.address.host, HOST);
+    assert.equal(app.config.allowControl, true);
+    assert.equal(app.config.pollInterval, 60);
+  } finally {
+    stop();
+  }
+});
+
+test('a forced discharge on a slow device: every write of the command leaves', async () => {
+  const { press, stop, dev } = await setup({ config: ALLOW });
+  try {
+    dev.set32(46003, 1100);
+    dev.set32(46005, 1100);
+    dev.delay = 200;
+    const ack = await press(R.CONTROL_MODE, 'discharge', 8 * SECOND);
+    assert.ok(ack.success || /sans confirmation/.test(String(ack.error)), String(ack.error));
+    assert.equal(dev.get(46001), 1);
+    assert.equal(dev.get(46002), 900);
+  } finally {
+    stop();
+  }
+});
+
+test('a stop written without a read back: the forced mode read later is the mode of before', async () => {
+  const { app, press, stop, dev, advance } = await setup({ config: ALLOW });
+  try {
+    ok(await press(R.CONTROL_MODE, 'discharge'));
+    dev.ignoreStop = true;
+    dev.silentReads.add(46001);
+    refused(await press(R.CONTROL_MODE, 'auto'), /sans confirmation/);
+    assert.equal(app.stopGuard.written, true);
+    dev.silentReads.clear();
+    const zeros = () => dev.writes().filter((w) => w.address === 46001 && w.value === 0).length;
+    const before = zeros();
+    await advance(MINUTE, 100);
+    assert.ok(app.stopGuard, 'never "changed elsewhere": the mode it failed to replace');
+    assert.equal(app.stopGuard.from, 1);
+    assert.ok(zeros() > before);
   } finally {
     stop();
   }

@@ -56,7 +56,9 @@ the refresh interval after the last read (it then shows the last result).
 | EPS output                                       | selection                      | disabled, EPS, UPS                                                        |
 
 A value that is implausible or not read is left unknown, never published as
-0 or as an old value.
+0 or as an old value. If the energy counters or the settings do not answer, the
+other values are published all the same (the status lists what was not read);
+after 3 failures in a row such a block is skipped for 10 reads.
 
 ### Energy counters
 
@@ -113,8 +115,11 @@ A stop not seen applied is **kept** (also across a restart: it is written
 again at the start, before anything else) and checked every 15 s: written
 again while the device shows the forced mode it replaced, an unknown mode or
 nothing. It is let go only when the device shows automatic mode, when
-another forced mode set elsewhere is read twice in a row (a newer choice is
-respected), or when you click a forced mode in Gladys (with the option). It
+another forced mode set elsewhere is read twice in a row after the stop was
+written (a newer choice is respected; a stop not written yet is never let go
+this way: it is written first, whatever mode the device shows), when you
+click a forced mode in Gladys (with the option), or when a stop is clicked for
+another address (after a change of the configuration). It
 never ends by time; the status says it is held. While a stop is being sent,
 a forced mode clicked in Gladys is refused.
 

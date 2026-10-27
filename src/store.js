@@ -103,11 +103,13 @@ const enabledCode = (value) =>
 
 function normalizeStop(raw, now) {
   const target = targetOf(raw);
-  // A date in the future: the clock was set back, or the file is not ours: invalid.
-  if (!target || !Number.isFinite(raw.since) || raw.since > now) return undefined;
+  if (!target) return undefined;
+  // `since` only dates the status: a date in the future (the clock was set back, a
+  // board without a clock before NTP) or none keeps the stop, dated now.
+  const since = Number.isFinite(raw.since) && raw.since <= now ? raw.since : now;
   return {
     ...target,
-    since: raw.since,
+    since,
     written: raw.written === true,
     from: enabledCode(raw.from) ?? null,
   };

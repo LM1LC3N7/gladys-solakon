@@ -162,6 +162,9 @@ export class SolakonApp {
     this.generation = 0;
     this.started = false;
     this.configRead = false;
+    /** Counts the configurations saved; the last one saved (src/handlers.js onConfigUpdated). */
+    this.configSeq = 0;
+    this.savedRaw = undefined;
     /** The time of the last read sent to the device (monotonic). */
     this.lastAttemptAt = -Infinity;
     this.lastStatus = undefined;
@@ -172,6 +175,9 @@ export class SolakonApp {
     /** Optional blocks the firmware does not serve (until a restart), and those answered once. */
     this.absent = new Set();
     this.answered = new Set();
+    /** Optional blocks that failed: { failures in a row, skipped until read number }; reads done. */
+    this.optional = new Map();
+    this.polls = 0;
     /** The session on the line: { kind: 'read' | 'command' | 'protect' | 'check', abort(), done }. */
     this.active = undefined;
     /** Commands and stops waiting for the line (a poll does not start meanwhile). */
@@ -278,8 +284,9 @@ export class SolakonApp {
       return;
     }
     const target = { host: kept.host, port: kept.port, unitId: kept.unitId };
-    this.stopGuard = this.newStopGuard(target, kept.from ?? undefined);
-    Object.assign(this.stopGuard, { since: kept.since, written: kept.written });
+    this.stopGuard = this.newStopGuard(target, undefined);
+    // Written again now: `from` and `written` are those of this run (read in its session).
+    this.stopGuard.since = kept.since;
     this.logger.warn('Solakon: a return to automatic mode kept in /data is written again');
     this.queueStop({ target, received: this.mono(), fromBoot: true });
   }
@@ -305,6 +312,7 @@ export class SolakonApp {
     this.unit = freshUnit();
     this.absent.clear();
     this.answered.clear();
+    this.optional.clear();
     this.published = undefined;
     this.badge = undefined;
     this.lastStatus = undefined;
@@ -411,6 +419,8 @@ export class SolakonApp {
       this.timers.clearTimeout(this.configTimer);
       this.configTimer = undefined;
     }
+    // A configuration saved after this request was sent wins over its answer.
+    const seq = this.configSeq;
     let raw;
     try {
       raw = await getConfig();
@@ -424,7 +434,20 @@ export class SolakonApp {
       }, TIMINGS.configRetry);
       return;
     }
-    await this.connected(raw);
+    await this.inOrder(() => {
+      if (seq !== this.configSeq) {
+        this.logger.debug('Solakon: configuration read before a newer save: the newer one kept');
+        return this.connected(this.savedRaw);
+      }
+      return this.connected(raw);
+    });
+  }
+
+  /** Configurations (read or saved) applied one at a time, in their order of arrival. */
+  inOrder(fn) {
+    const run = (this.configChain ?? Promise.resolve()).then(fn);
+    this.configChain = run.catch(() => {});
+    return run;
   }
 
   /** A new address or unit id restarts (an interval only reschedules). */
@@ -455,13 +478,19 @@ export class SolakonApp {
    * (each one waits for the one before it).
    */
   configUpdated(raw = {}) {
-    const run = (this.configChain ?? Promise.resolve()).then(() => this.applyConfig(raw));
-    this.configChain = run.catch(() => {});
-    return run;
+    // Counted on arrival: a `getConfig()` answer that left before it is stale.
+    this.configSeq += 1;
+    this.savedRaw = raw;
+    return this.inOrder(() => this.applyConfig(raw));
   }
 
   async applyConfig(raw) {
     this.configRead = true;
+    if (!this.started) {
+      this.started = true;
+      await this.start(raw, { fresh: true });
+      return;
+    }
     if (this.needsRestart(raw)) {
       await this.start(raw, { fresh: true });
       return;
@@ -723,32 +752,61 @@ export class SolakonApp {
   async readAll(session) {
     const raw = {};
     const failed = [];
+    this.polls += 1;
+    let dead = false;
     for (const block of BLOCKS) {
       if (this.absent.has(block.key)) {
+        continue;
+      }
+      if (!block.core && (dead || this.polls < (this.optional.get(block.key)?.skipUntil ?? 0))) {
+        // After a silent optional block the session is gone: the rest waits for the next read.
+        failed.push(block.key);
         continue;
       }
       let values;
       try {
         values = await this.readBlock(session, block, { timeoutMs: TIMINGS.requestTimeout });
       } catch (err) {
-        if (err.kind !== ERROR_KINDS.REFUSED || block.core) {
+        if (block.core || err.kind === ERROR_KINDS.ABORTED) {
           throw err;
         }
-        if (err.code === ILLEGAL_DATA_ADDRESS && !this.answered.has(block.key)) {
-          this.absent.add(block.key);
-          this.logger.info(`Solakon: the firmware does not serve the ${block.key} registers`);
+        failed.push(block.key);
+        if (err.kind === ERROR_KINDS.REFUSED) {
+          if (err.code === ILLEGAL_DATA_ADDRESS && !this.answered.has(block.key)) {
+            failed.pop();
+            this.absent.add(block.key);
+            this.logger.info(`Solakon: the firmware does not serve the ${block.key} registers`);
+            continue;
+          }
         } else {
-          failed.push(block.key);
-          this.logger.warn(
-            `Solakon: reading the ${block.key} registers failed (${errorReason(err)})`,
-          );
+          // Silent, closed or a wrong answer: the core values already read are kept.
+          dead = true;
         }
+        this.optionalFailed(block.key);
+        this.logger.warn(
+          `Solakon: reading the ${block.key} registers failed (${errorReason(err)})`,
+        );
         continue;
       }
       this.answered.add(block.key);
+      this.optional.delete(block.key);
       Object.assign(raw, values);
     }
     return { values: interpret(raw), failed };
+  }
+
+  /**
+   * An optional block failed: after LIMITS.optionalFailures failures in a row
+   * it is skipped for LIMITS.optionalSkip reads (never blocking the others).
+   */
+  optionalFailed(key) {
+    const entry = this.optional.get(key) ?? { failures: 0, skipUntil: 0 };
+    entry.failures += 1;
+    if (entry.failures >= LIMITS.optionalFailures) {
+      entry.failures = 0;
+      entry.skipUntil = this.polls + LIMITS.optionalSkip;
+    }
+    this.optional.set(key, entry);
   }
 
   /** A read: the values of this read only (a value not read is unknown). */
@@ -902,7 +960,13 @@ export class SolakonApp {
     const serial = this.counterSerial;
     const held = [...this.counterGuards]
       .filter(([, g]) => g.held)
-      .map(([role, g]) => ({ role, from: g.held.from, to: g.held.to }));
+      .map(([role, g]) => ({
+        role,
+        direction: g.held.direction,
+        from: g.held.from,
+        to: g.held.to,
+        at: g.held.at,
+      }));
     const pending = this.pendingAccept;
     if (
       pending &&
@@ -915,8 +979,15 @@ export class SolakonApp {
       const skipped = [];
       for (const item of pending.list) {
         const guard = this.counterGuards.get(item.role);
-        if (guard?.held && guard.held.to === item.to && guard.held.from === item.from) {
+        if (
+          guard?.held &&
+          guard.held.from === item.from &&
+          guard.held.direction === item.direction
+        ) {
+          // Bounded to the value listed at the first press, plus what the device may
+          // have moved since (src/guard.js): a counter moving between reads is accepted.
           guard.acceptHeld();
+          guard.accepted = { direction: item.direction, to: item.to, at: item.at };
           accepted.push(item.role);
         } else {
           skipped.push(item.role);
@@ -1194,7 +1265,7 @@ export class SolakonApp {
       seq: this.protectSeq,
       generation: this.generation,
       target: this.target(),
-      state: { written: false },
+      state: { written: false, sent: [] },
     };
     job.done = new Promise((resolve) => {
       job.resolve = resolve;
@@ -1307,7 +1378,7 @@ export class SolakonApp {
     if (err?.beforeSend && state.written) {
       // An earlier write of the same command left: never "not sent".
       this.followUp();
-      return this.refusal(ERRORS.sentUnconfirmed(err.message));
+      return this.refusal(ERRORS.sentUnconfirmed(this.sentNote(err.message, state)));
     }
     if (err instanceof Refusal || err?.beforeSend) {
       return err;
@@ -1332,8 +1403,15 @@ export class SolakonApp {
       return this.refusal(ERRORS.refused(reason));
     }
     this.followUp();
-    this.logger.warn(`Solakon: command sent, NOT confirmed (${plan.role}): ${reason}`);
-    return this.refusal(ERRORS.sentUnconfirmed(reason));
+    this.logger.warn(
+      `Solakon: command sent, NOT confirmed (${plan.role}, written: ${state.sent.join(', ')}): ${reason}`,
+    );
+    return this.refusal(ERRORS.sentUnconfirmed(this.sentNote(reason, state)));
+  }
+
+  /** The reason of a command not confirmed, with the registers that left. */
+  sentNote(reason, state) {
+    return `${reason}; ${word(ERRORS.written(state.sent.join(', ')), this.config.language)}`;
   }
 
   /** The checks before every write, on the latest configuration. */
@@ -1466,17 +1544,22 @@ export class SolakonApp {
     }
     const sendBy = this.mono() + TIMINGS.commandMinSend + TIMINGS.commandMinRead;
     this.logger.info(`Solakon: ${plan.role} (${plan.asked})`);
-    for (const [register, value, effective] of writes) {
+    for (const [register, value] of writes) {
       const request = writeRequest(register, value);
       let echo;
       try {
         echo = await session.request(request, {
           timeoutMs: TIMINGS.requestTimeout,
-          startBy: Math.min(sendBy, startBy + TIMINGS.commandMinSend),
+          // The deadline holds for the first write; the next ones belong to a command already
+          // under way (each still checked in beforeSend).
+          startBy:
+            state.sent.length === 0 ? Math.min(sendBy, startBy + TIMINGS.commandMinSend) : Infinity,
           beforeSend: () => {
             // The option, the configuration and a stop, right before each write.
             this.checkCommand(job);
-            if (effective) state.written = true;
+            // Every write that leaves counts: never "not sent" after it.
+            state.written = true;
+            state.sent.push(register);
             this.lastSentAt = this.mono();
             if (register === REG.REMOTE_CONTROL) {
               // A newer forced mode left: an older stop is never written again after it.
@@ -1485,7 +1568,12 @@ export class SolakonApp {
           },
         });
       } catch (err) {
-        if (err.kind === ERROR_KINDS.REFUSED && NOT_APPLIED_EXCEPTIONS.has(err.code) && effective) {
+        // Refused and not applied: "refused" only when nothing else of the command left.
+        if (
+          err.kind === ERROR_KINDS.REFUSED &&
+          NOT_APPLIED_EXCEPTIONS.has(err.code) &&
+          state.sent.length === 1
+        ) {
           state.refused = true;
         }
         throw err;
@@ -1625,12 +1713,18 @@ export class SolakonApp {
    * elsewhere, read once: read again before letting go, nothing written),
    * 'drop' (that other mode read twice in a row) or 'resend' (the mode of
    * before, an unknown mode, or nothing read: written over, in doubt). When
-   * the mode of before is unknown (a stop clicked before any read), the first
-   * forced mode read is taken as that mode.
+   * the mode of before is unknown, the first forced mode read after the stop
+   * was written is taken as that mode. Until the stop was written in this run
+   * (after `from` was read in the same session), never 'confirm' nor 'drop':
+   * a mode of before unknown or stale is never "changed elsewhere".
    */
   decideStop(stop, code, readStartedAt) {
     if (code !== undefined && controlModeOf(code) === 'auto') {
       return 'done';
+    }
+    if (!stop.written) {
+      stop.other = undefined;
+      return 'resend';
     }
     if (stop.sentAt !== undefined && readStartedAt < stop.sentAt + TIMINGS.applyDelay) {
       return 'wait';
@@ -1666,18 +1760,13 @@ export class SolakonApp {
     const retryUntil = Math.max(job.received, this.mono()) + TIMINGS.commandSendBy;
     if (!this.stopGuard || !sameTarget(this.stopGuard.target, target)) {
       if (this.stopGuard) this.dropStopGuard('a stop to another address');
-      // The mode read before, when it is a forced mode of this device.
-      const known = sameTarget(target, this.target()) ? this.unit.values?.controlCode : undefined;
-      this.stopGuard = this.newStopGuard(
-        target,
-        known !== undefined && controlModeOf(known) !== 'auto' ? known : undefined,
-      );
+      this.stopGuard = this.newStopGuard(target, undefined);
     }
     const guard = this.stopGuard;
     if (!job.fromBoot) {
       guard.since = this.now();
-      guard.other = undefined;
     }
+    guard.other = undefined;
     // In /data before the first byte, so a restart writes it again; a save that fails or
     // hangs never holds the stop back (200 ms at most).
     let saveTimer;
@@ -1700,6 +1789,9 @@ export class SolakonApp {
           if (this.stopGuard === guard) {
             guard.written = true;
             guard.sentAt = at;
+            // The mode it replaces is read after the write, in this session (never a poll's).
+            guard.from = undefined;
+            guard.other = undefined;
           }
         },
       });
@@ -1708,6 +1800,11 @@ export class SolakonApp {
         throw new ModbusError(ERROR_KINDS.PROTOCOL, 'not the echo of the write', { sent: true });
       }
       back = await this.readValues(session, ['remote']);
+      const code = back.controlCode;
+      if (this.stopGuard === guard && code !== undefined && controlModeOf(code) !== 'auto') {
+        // Still forced right after the write: the mode it replaces (never "changed elsewhere").
+        guard.from = code;
+      }
     };
     const AGAIN = [ERROR_KINDS.CLOSED, ERROR_KINDS.TIMEOUT, ERROR_KINDS.PROTOCOL];
     let failure;
@@ -1735,10 +1832,8 @@ export class SolakonApp {
       }
     }
     if (state.written) {
+      // The reads that follow publish the mode (with the serial number read again).
       this.followUp();
-    }
-    if (sameTarget(target, this.target()) && back !== undefined) {
-      this.noteValues(back);
     }
     let result;
     if (confirmed) {
@@ -1819,6 +1914,13 @@ export class SolakonApp {
               }
               this.logger.warn('Solakon: still not in automatic mode after a stop: written again');
               outcome.written = true;
+              if (!guard.written) {
+                // First write of this stop: the mode it replaces is the one read just now.
+                const read = value?.controlCode;
+                guard.from =
+                  read !== undefined && controlModeOf(read) !== 'auto' ? read : undefined;
+              }
+              guard.other = undefined;
               guard.written = true;
               guard.sentAt = this.mono();
               this.lastSentAt = guard.sentAt;
@@ -1852,9 +1954,6 @@ export class SolakonApp {
       await this.persistStop();
       if (outcome.written) this.followUp();
       this.armStopCheck(outcome.decision === 'confirm' ? TIMINGS.holdConfirm : undefined);
-    }
-    if (sameTarget(guard.target, this.target()) && outcome.back !== undefined) {
-      this.noteValues(outcome.back);
     }
   }
 
@@ -1898,6 +1997,9 @@ export class SolakonApp {
       this.dropStopGuard('changed elsewhere');
     } else if (decision === 'confirm') {
       this.armStopCheck(TIMINGS.holdConfirm);
+    } else if (!stop.written) {
+      // The device answers again and the stop never left: written now, by a check.
+      this.armStopCheck(0);
     } else {
       this.persistStop().catch(() => {});
     }

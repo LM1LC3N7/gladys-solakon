@@ -34,11 +34,12 @@ Gladys ⇄ SDK ⇄ src/handlers.js ⇄ src/app.js (SolakonApp)
   discharge; forced power (800/1200 W); minimum and maximum state of charge (46609/46610, 10–100 %);
   EPS output (46613). Fresh read with the serial number, writes checked again at the protocol
   layer, echo and read back; one at a time in order on one session.
-- **Stop** (protective): 46001 = 0 (automatic mode); never behind the option, the bounds, a read or
-  a command; drops every command that arrived before; retried for 3 s; kept in `/data` with the mode
-  it replaced and checked every 15 s, never ended by time: let go on automatic mode read, on another
-  forced mode read twice in a row, or on a newer forced mode clicked; written again at a restart
-  before the configuration is read.
+- **Stop** (protective): 46001 = 0 (automatic mode), the mode it replaces read in the same session
+  (never a poll's); never behind the option, the bounds, a read or a command; drops
+  every command that arrived before; retried for 3 s; kept in `/data` and checked every 15 s, never
+  ended by time: let go on automatic mode read, on another forced mode read twice in a row once it
+  was written, on a newer forced mode clicked, or on a stop to another address; written again at a
+  restart before the configuration is read.
 
 ## Development
 

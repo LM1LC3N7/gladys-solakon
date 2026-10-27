@@ -65,6 +65,11 @@ test('units: only those the core lists for the category', { skip: !core }, () =>
   );
 });
 
+test('the AC power is a signed energy-sensor power, never home output nor grid', () => {
+  const ac = device.features.find((f) => f.external_id.endsWith(':ac-power'));
+  assert.deepEqual([ac.category, ac.type, ac.min], ['energy-sensor', 'power', -5000]);
+});
+
 test('supported options: plain string labels the core accepts', () => {
   for (const f of device.features.filter((x) => x.supported_options)) {
     for (const o of f.supported_options) {

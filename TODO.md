@@ -27,6 +27,38 @@ Handoff document: what is done, what was decided, what comes next.
 
 ## Decisions
 
+- **Review r1 (2026-10-27)**:
+  - B1: a stop is never let go (`confirm`, `drop`) before it was written in this run. Its
+    `from` is the forced mode read in the session that writes it (the read back right after the
+    click's write, the read of a check just before its write); a poll value or the `from` kept
+    in /data is never used (stale). No read before the click's write: on a slow device it pushed
+    the ack past 3.5 s, and a `from` read right after our own write is never "changed
+    elsewhere" anyway. A poll reaching the device while the stop was never written triggers a
+    check at once. At boot the stop counts as not written until its boot write leaves.
+  - I1: `getConfig()` answers and saved configurations go through one chain; an answer whose
+    request left before a save is replaced by the last configuration saved.
+  - I2: every write that leaves counts: a command not confirmed after any write says "sent,
+    without confirmation" with the registers written, and the follow-up reads run. "Refused"
+    only when the refused write was the only one that left.
+  - I3: the core blocks are read first; a silent optional block (energy, settings) ends the
+    session but the values read are applied, the status lists the blocks not read; 3 failures
+    in a row skip the block for 10 reads.
+  - Minors: a stop in /data with a future or missing date is kept, dated now; the reads of the
+    stop and its checks are no longer published (no serial read with them: the follow-up reads
+    publish); trailing 0xFF of the serial number dropped; "published at the next read" only
+    when something was accepted; a counter that moved between the two presses is accepted,
+    bounded by the guard to the value listed plus the margin since; tests for the mutation
+    gaps (stop ends a stuck read within 400 ms, option between writes, config chain, guard 0,
+    AC power category, undocumented and unreadable modes, apply wait, check yielding, EPS
+    option, poll ending the stop). Equivalent mutants left: M30 (the stop's /data wait is a
+    race with a timer either way), M50 (command reads hold no counter), M46 (the option is
+    checked again before any write: refused the same), M18/M19 alone (the stop takes the line
+    in two places on purpose; both removed, N01, is killed).
+  - Found while closing the gaps: the 600 ms deadline of a command held for every write, so a
+    forced mode on a slow device (200 ms per answer) never wrote the mode; it now holds for
+    the first write only (test). A stop written without a read back adopts the forced mode
+    read next as `from` (test).
+
 - **Version 0.1.0 set by hand** in `package.json`, `package-lock.json`, the manifest and
   `docker_image` (`ghcr.io/lm1lc3n7/gladys-solakon:0.1.0`); the first patch release gives 0.1.1.
   SDK 0.16.0 (latest published, 2026-10-27).

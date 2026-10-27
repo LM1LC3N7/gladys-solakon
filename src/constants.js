@@ -48,7 +48,8 @@ export const ILLEGAL_DATA_ADDRESS = 2;
 export const NOT_APPLIED_EXCEPTIONS = new Set([1, 2, 3]);
 
 /**
- * The blocks read, in this order: `[address, type, key, scale]` points
+ * The blocks read, in this order (the core ones first: a silent optional block
+ * ends the session, the core values already read are kept): `[address, type, key, scale]` points
  * inside one read of `count` registers from `address` (the manufacturer's
  * batches). `core`: an exception on it fails the read; an optional block
  * refused with "illegal data address" before it was ever answered is not
@@ -95,17 +96,6 @@ export const BLOCKS = [
     points: [[39424, 'i16', 'soc']],
   },
   {
-    key: 'energy',
-    address: 39601,
-    count: 26,
-    points: [
-      [39601, 'u32', 'pvEnergy', 100],
-      [39605, 'u32', 'chargeEnergy', 100],
-      [39609, 'u32', 'dischargeEnergy', 100],
-      [39621, 'u32', 'acExportEnergy', 100],
-    ],
-  },
-  {
     key: 'remote',
     core: true,
     address: 46001,
@@ -116,6 +106,17 @@ export const BLOCKS = [
       [46003, 'i32', 'remotePower'],
       [46005, 'i32', 'remoteReactive'],
       [46007, 'u16', 'remoteCountdown'],
+    ],
+  },
+  {
+    key: 'energy',
+    address: 39601,
+    count: 26,
+    points: [
+      [39601, 'u32', 'pvEnergy', 100],
+      [39605, 'u32', 'chargeEnergy', 100],
+      [39609, 'u32', 'dischargeEnergy', 100],
+      [39621, 'u32', 'acExportEnergy', 100],
     ],
   },
   {
@@ -218,6 +219,9 @@ export const LIMITS = {
   statesPerRequest: 100,
   /** Commands waiting in the queue at most. */
   queue: 16,
+  /** An optional block failing this many reads in a row is skipped for the next 10 reads. */
+  optionalFailures: 3,
+  optionalSkip: 10,
 };
 
 export const TIMINGS = {

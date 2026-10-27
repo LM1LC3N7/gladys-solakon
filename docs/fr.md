@@ -57,7 +57,10 @@ le dernier résultat).
 | Sortie de secours (EPS)                                                  | liste                              | désactivée, EPS, UPS                                                             |
 
 Une valeur invraisemblable ou non lue reste inconnue, jamais publiée à 0 ni
-comme une ancienne valeur.
+comme une ancienne valeur. Si les compteurs d’énergie ou les réglages ne
+répondent pas, les autres valeurs sont publiées quand même (le statut dit ce
+qui n’a pas été lu) ; après 3 échecs de suite, ce bloc est sauté pendant 10
+lectures.
 
 ### Compteurs d’énergie
 
@@ -118,8 +121,11 @@ redémarrage : il est réécrit au démarrage, avant toute autre chose) et
 vérifié toutes les 15 s : réécrit tant que l’appareil montre le mode forcé
 qu’il remplace, un mode inconnu ou rien. Il n’est abandonné que si
 l’appareil montre le mode automatique, si un autre mode forcé réglé ailleurs
-est lu deux fois de suite (un choix plus récent est respecté), ou si vous
-cliquez un mode forcé dans Gladys (avec l’option). Il ne s’arrête jamais avec
+est lu deux fois de suite après l’écriture de l’arrêt (un choix plus récent
+est respecté ; un arrêt pas encore écrit n’est jamais abandonné ainsi : il est
+d’abord écrit, quel que soit le mode affiché), si vous cliquez un mode
+forcé dans Gladys (avec l’option), ou si un arrêt est cliqué pour une autre
+adresse (après un changement de configuration). Il ne s’arrête jamais avec
 le temps ; le statut indique qu’il est gardé. Pendant l’envoi d’un arrêt, un
 mode forcé cliqué dans Gladys est refusé.
 

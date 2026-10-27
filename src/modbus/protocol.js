@@ -44,12 +44,13 @@ export function parseRead(block, pdu) {
 
 const sizeOf = (type) => (type === 'string16' ? 16 : type.endsWith('32') ? 2 : 1);
 
-/** Printable ASCII of registers (high byte first), NULs and spaces at the ends dropped. */
+/** Printable ASCII of registers (high byte first), padding at the end dropped. */
 export function stringOf(words) {
   const bytes = [];
   for (const w of words) bytes.push((w >> 8) & 0xff, w & 0xff);
   let end = bytes.length;
-  while (end > 0 && (bytes[end - 1] === 0 || bytes[end - 1] === 0x20)) end -= 1;
+  // Padding at the end: NUL, space or 0xFF (an erased register).
+  while (end > 0 && [0, 0x20, 0xff].includes(bytes[end - 1])) end -= 1;
   const text = bytes.slice(0, end);
   // A byte that is not printable ASCII: not a text (never shown, never kept).
   if (text.some((b) => b < 0x20 || b > 0x7e)) return undefined;

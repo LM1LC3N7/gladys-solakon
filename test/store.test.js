@@ -23,7 +23,9 @@ const stop = {
 
 test('a stop: kept when valid, its date never in the future, its mode an enabled code', () => {
   assert.deepEqual(normalizeMemory({ stop }, NOW).stop, stop);
-  assert.equal(normalizeMemory({ stop: { ...stop, since: NOW + 60_000 } }, NOW).stop, null);
+  // A date in the future (clock set back): the stop is kept, dated now (never ended by time).
+  assert.equal(normalizeMemory({ stop: { ...stop, since: NOW + 60_000 } }, NOW).stop.since, NOW);
+  assert.equal(normalizeMemory({ stop: { ...stop, since: 'x' } }, NOW).stop.since, NOW);
   assert.equal(normalizeMemory({ stop: { ...stop, host: 'a\nb' } }, NOW).stop, null);
   assert.equal(normalizeMemory({ stop: { ...stop, from: 2 } }, NOW).stop.from, null);
   assert.equal(normalizeMemory({ stop: { ...stop, unitId: 0 } }, NOW).stop, null);
