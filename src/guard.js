@@ -16,6 +16,8 @@
 // - the acceptance is BOUNDED: it covers the value shown (`held.to`, read at
 //   `held.at`) and what the device may have moved since (COUNTER_MAX_KW x
 //   hours + COUNTER_SLACK_KWH), nothing else;
+// - an accepted value is a floor both ways: a value under it is held (never
+//   counted), the acceptance kept and its margin counted from then;
 // - while a jump is held, every value at or above it stays held;
 // - a value back to the usual rule ends the hold, but only within the margin
 //   counted from the hold itself.
@@ -106,9 +108,10 @@ export class IndexGuard {
 
   /** Whether `value` is within the acceptance: the value shown, plus the margin since. */
   withinAccepted(value, at) {
-    const { direction, to, at: since } = this.accepted;
+    const { to, at: since } = this.accepted;
     const top = to + margin(since, at);
-    return direction === 'up' ? value >= to && value <= top : value <= top;
+    // Both ways a floor: an accepted drop is no licence for a lower value later.
+    return value >= to && value <= top;
   }
 
   /** Whether `value`, read at `at`, may be published. A published value becomes the reference. */
@@ -128,7 +131,15 @@ export class IndexGuard {
       if (this.withinAccepted(value, at)) {
         return this.take(value, at);
       }
-      // Not what the user accepted: held again, the acceptance dropped.
+      if (value < this.accepted.to) {
+        // Under the floor accepted (a glitch): held, shown, never counted; the
+        // acceptance stays for the value listed, which may come back.
+        this.held = { direction: 'down', from: this.last.value, to: value, threshold: value, at };
+        // Its margin counts from now: a long glitch never widens it.
+        this.accepted = { ...this.accepted, at };
+        return false;
+      }
+      // Above what the user accepted: held again, the acceptance dropped.
       this.accepted = undefined;
     }
     const up = this.held?.direction === 'up';
