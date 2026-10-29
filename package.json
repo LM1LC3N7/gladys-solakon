@@ -1,6 +1,6 @@
 {
   "name": "gladys-solakon",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Gladys Assistant external integration for the Solakon ONE plug-in battery over local Modbus TCP: solar, battery, AC output, energy counters; optional forced charge/discharge, power, state of charge limits and EPS output, bounded and off by default, return to automatic mode never held back. Unofficial, not affiliated with Solakon.",
   "type": "module",
